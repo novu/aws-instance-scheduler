@@ -40,6 +40,7 @@ class InstanceSchedule:
     STATE_STOPPED = "stopped"
     STATE_RUNNING = "running"
     STATE_RETAIN_RUNNING = "retain-running"
+    STATE_STANDBY = "standby"
 
     def __init__(self, name, periods=None, timezone=None, override_status=None, description=None, use_metrics=None,
                  stop_new_instances=None, schedule_dt=None, use_maintenance_window=False, enforced=False, retain_running=False):
@@ -121,7 +122,7 @@ class InstanceSchedule:
         # gets the local time using the configured timezone
         def get_check_time(time):
             check_time = time if time else self.schedule_dt
-            return check_time
+            return check_time.astimezone(pytz.timezone(self.timezone))
 
         # actions for desired state is running
         def handle_running_state(inst, periods):
@@ -146,7 +147,7 @@ class InstanceSchedule:
                 else:
                     result = items[0]
                     i = 1
-                    while i < len(items):
+                    while i < len(list(items)):
                         result = fn(result, items[i])
                         i += 1
                     return result
@@ -154,7 +155,7 @@ class InstanceSchedule:
             # nearest period in schedule with running state
             current_running_period = _reduce(latest_starttime, periods)
 
-            multiple_active_periods = len(periods) > 1
+            multiple_active_periods = len(list(periods)) > 1
 
             self._log_debug(DEBUG_ACTIVE_PERIOD_IN_SCHEDULE.format("s" if multiple_active_periods else "", self.name,
                                                                    ",".join('"' + per["period"].name + '"' for per in periods)))
@@ -210,8 +211,7 @@ class InstanceSchedule:
             for p in self.periods]
 
         # get periods from the schema that have a running state
-        periods_with_running_state = filter(lambda period: period["state"] == InstanceSchedule.STATE_RUNNING,
-                                            periods_with_desired_states)
+        periods_with_running_state = [p for p in periods_with_desired_states if p["state"] == InstanceSchedule.STATE_RUNNING]
 
         if any(periods_with_running_state):
             return handle_running_state(instance, periods_with_running_state)
@@ -229,7 +229,7 @@ class InstanceSchedule:
            :param start_dt: start date of the period, None is today
            :param stop_dt: end date of the period, None is today
            :param logger: logger for output of scheduling logic
-           :return: dictionary containing the periods in the specified in which instances are running as well as the % saving 
+           :return: dictionary containing the periods in the specified in which instances are running as well as the % saving
            in running hours
            """
         result = {}

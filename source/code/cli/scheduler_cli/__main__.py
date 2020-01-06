@@ -11,6 +11,6 @@
 #  and limitations under the License.                                                                                #
 ######################################################################################################################
 
-from scheduler_cli import main
+from scheduler_cli.scheduler_cli import main
 
 main()

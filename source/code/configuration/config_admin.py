@@ -133,7 +133,7 @@ class ConfigAdmin:
     def get_config_as_json(self):
         """
         Gets the configuration as json
-        :return: 
+        :return:
         """
         resp = self._table.get_item_with_rerties(Key={"name": "scheduler", "type": "config"}, ConsistentRead=True)
         item = resp.get("Item", {})
@@ -233,7 +233,7 @@ class ConfigAdmin:
         Gets a specific period
         :param name: name of the period
         :param exception_if_not_exists: set to True to raise an exception if it does not exist
-        :return: 
+        :return:
         """
         if name is None or len(name) == 0:
             raise ValueError(ERR_GET_EMPTY_PERIOD_NAME)
@@ -277,7 +277,7 @@ class ConfigAdmin:
         Deletes a period. Note that a period can ony be deleted when not longer used in any schedule
         :param name: Name of the period
         :param exception_if_not_exists: Set to true is a nexception should be raised if the period did not exist
-        :return: 
+        :return:
         """
         if name is None or len(name) == 0:
             raise ValueError(ERR_DEL_PERIOD_EMPTY)
@@ -375,7 +375,7 @@ class ConfigAdmin:
         :param name: name of the schedule
         :param startdate: start date of the period, None is today
         :param enddate: end date of the period, None is today
-        :return: dictionary containing the periods in the specified in which instances are running as well as the % saving 
+        :return: dictionary containing the periods in the specified in which instances are running as well as the % saving
         in running hours
         """
         if name is None or len(name) == 0:
@@ -424,7 +424,7 @@ class ConfigAdmin:
     def _ensure_set(s):
         if isinstance(s, list):
             return set(s)
-        if isinstance(s, str) or isinstance(s, unicode):
+        if isinstance(s, str):
             return set(s.split(","))
         return s
 
@@ -702,4 +702,3 @@ class ConfigAdmin:
     @staticmethod
     def _event_bus_permissions_sid_prefix():
         return "instance-scheduler-{}-{}-".format(os.getenv(configuration.ENV_STACK).lower(), boto3.Session().region_name)
-

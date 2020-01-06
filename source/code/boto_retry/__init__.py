@@ -59,14 +59,14 @@ def get_default_linear_wait_settings():
 def make_method_with_retries(boto_client_or_resource, name, service_retry_strategy=None, method_suffix=DEFAULT_SUFFIX):
     """
     Creates a wrapper for a boto3 method call that handles boto_retry in case of an exception from which
-    it can recover. Situations in which case this is possible are defined in the service specific 
+    it can recover. Situations in which case this is possible are defined in the service specific
     service_retry_strategy class
     :param boto_client_or_resource: boto client or resource to add method to
     :param name: Name of the boto call
-    :param service_retry_strategy: Strategy that implements the logic that determines if boto_retry are possible 
+    :param service_retry_strategy: Strategy that implements the logic that determines if boto_retry are possible
     in case of an exception
     :param method_suffix: suffix for wrapped boto method
-    :return: 
+    :return:
     """
 
     # default strategy
@@ -178,7 +178,7 @@ def add_retry_methods_to_resource(resource, methods, context=None, method_suffix
     :param resource: Boto3 resource
     :param methods: List of methods for which a new method will be added to the client wrapped in retry logic
     :param context: Lambda execution context
-    :param method_suffix: 
+    :param method_suffix:
     :return: Suffix to add to the methods with retry logic that are added to the client, use none for DEFAULT_SUFFIX
     """
     # get name of the service and get the default strategy for that service
@@ -212,7 +212,7 @@ def _apply_randomness(value, random_factor):
 
 class WaitStrategy:
     """
-    Implements wait strategy with defined wait waits 
+    Implements wait strategy with defined wait waits
     """
 
     def __init__(self, waits, random_factor=0):
@@ -227,7 +227,7 @@ class WaitStrategy:
     def __iter__(self):
         return self
 
-    def next(self):
+    def __next__(self):
         """
         Returns next wait period
         :return: Next wait period
@@ -241,7 +241,7 @@ class WaitStrategy:
     def reset(self):
         """
         Resets wait strategy (
-        :return: 
+        :return:
         """
         self._index = 0
 
@@ -262,7 +262,7 @@ class ConstantWaitStrategy:
     def __iter__(self):
         return self
 
-    def next(self):
+    def __next__(self):
         """
         Returns next wait period
         :return: Next wait period
@@ -273,7 +273,7 @@ class ConstantWaitStrategy:
     def reset(cls):
         """
         Resets wait strategy (No action for this strategy)
-        :return: 
+        :return:
         """
         pass
 
@@ -299,7 +299,7 @@ class LinearWaitStrategy:
     def __iter__(self):
         return self
 
-    def next(self):
+    def __next__(self):
         """
         Returns next wait period
         :return: Next wait period
@@ -311,7 +311,7 @@ class LinearWaitStrategy:
     def reset(self):
         """
         Reset wait period to start wait period
-        :return: 
+        :return:
         """
         self._val = self.start
 
@@ -337,7 +337,7 @@ class MultiplyWaitStrategy:
     def __iter__(self):
         return self
 
-    def next(self):
+    def __next__(self):
         """
         Returns next wait period
         :return: Next wait period

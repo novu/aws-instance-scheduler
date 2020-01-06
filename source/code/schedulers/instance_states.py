@@ -183,7 +183,7 @@ class InstanceStates:
             self._dirty = True
 
             # get key of stored instances
-            stored_instances = [i for i in self._state_info.keys()]
+            stored_instances = [i for i in list(self._state_info)]
             for i in stored_instances:
                 # test if instance was still there
                 if i not in instances:

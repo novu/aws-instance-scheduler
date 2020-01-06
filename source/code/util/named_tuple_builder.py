@@ -44,7 +44,7 @@ def as_namedtuple(name, d, deep=True, namefunc=None, excludes=None):
 
     if deep:
         # deep copy to avoid modifications on input dictionaries
-        for key in d.keys():
+        for key in list(d):
             key_name = name_func(key)
             if is_dict(d[key]) and key not in excludes:
                 dest[key_name] = as_namedtuple(key, d[key], namefunc=name_func, excludes=excludes, deep=True)
@@ -53,6 +53,6 @@ def as_namedtuple(name, d, deep=True, namefunc=None, excludes=None):
             else:
                 dest[key_name] = d[key]
     else:
-        dest = {name_func(key): d[key] for key in d.keys()}
+        dest = {name_func(key): d[key] for key in list(d)}
 
-    return collections.namedtuple(name_func(name), dest.keys())(*dest.values())
+    return collections.namedtuple(name_func(name), list(dest))(*dest.values())

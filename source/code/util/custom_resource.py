@@ -172,7 +172,7 @@ class CustomResource:
 
         headers = {
             'content-type': '',
-            'content-length': str(len(resp))
+            'content-length': len(resp)
         }
 
         # PUT request to cloudformation

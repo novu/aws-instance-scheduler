@@ -19,7 +19,7 @@ from hashlib import sha256
 import boto3
 
 import configuration
-import setup_demo_data as demo_data
+import requesthandlers.setup_demo_data as demo_data
 from boto_retry import get_client_with_retries
 from configuration.config_admin import ConfigAdmin
 from util.custom_resource import CustomResource
@@ -187,8 +187,8 @@ class SchedulerSetupHandler(CustomResource):
 
     def set_lambda_logs_retention_period(self):
         """
-        Aligns retention period for default Lambda logstreams with settings 
-        :return: 
+        Aligns retention period for default Lambda logstreams with settings
+        :return:
         """
 
         if self.context is None:
@@ -234,7 +234,7 @@ class SchedulerSetupHandler(CustomResource):
         metrics_data = {
             "Type": "stack",
             "Version": self._stack_version,
-            "StackHash": sha256(self.stack_id).hexdigest(),
+            "StackHash": sha256(self.stack_id.encode('utf-8')).hexdigest(),
             "Data": {
                 "Status": "stack_create",
                 "Region": self.region
@@ -248,7 +248,7 @@ class SchedulerSetupHandler(CustomResource):
         metrics_data = {
             "Type": "stack",
             "Version": self._stack_version,
-            "StackHash": sha256(self.stack_id).hexdigest(),
+            "StackHash": sha256(self.stack_id.encode('utf-8')).hexdigest(),
             "Data": {
                 "Status": "stack_delete",
                 "Region": self.region

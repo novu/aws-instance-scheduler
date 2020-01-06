@@ -82,8 +82,8 @@ class SchedulerMetrics:
 
         if len(self._metrics_managed) > 0:
             metric_data = []
-            for service in self._metrics_managed.keys():
-                for name in self._metrics_managed[service].keys():
+            for service in list(self._metrics_managed):
+                for name in list(self._metrics_managed):
                     metric_data.append(
                         build_metric(service, name, SchedulerMetrics.MANAGED_INSTANCES, self._metrics_managed[service]))
                     metric_data.append(

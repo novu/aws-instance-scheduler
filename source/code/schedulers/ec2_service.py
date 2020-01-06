@@ -12,31 +12,41 @@
 ######################################################################################################################
 
 import jmespath
+import itertools
+import re
 
 import schedulers
 from boto_retry import get_client_with_retries
 from configuration.instance_schedule import InstanceSchedule
+from time import sleep
 
 # instances are started in batches, larger bathes are more efficient but smaller batches allow more instances
 # to start if we run into resource limits
 START_BATCH_SIZE = 5
 STOP_BATCH_SIZE = 50
+STANDBY_BATCH_SIZE = 20
 
 ERR_STARTING_INSTANCES = "Error starting instances {}, ({})"
 ERR_STOPPING_INSTANCES = "Error stopping instances {}, ({})"
+ERR_EXITING_STANDBY_INSTANCES = "Error exiting standby for instances {}, ({}): {}"
 
 INF_FETCHED_INSTANCES = "Number of fetched ec2 instances is {}, number of instances in a schedulable state is {}"
 INF_FETCHING_INSTANCES = "Fetching ec2 instances for account {} in region {}"
 INF_SETTING_SIZE = "Setting size for ec2 instance {} to {}"
+INF_FETCHING_ASG_INSTANCES = "Fetching schedulable ec2 instances belonging to an autoscaling group for account {} in region {}"
+INF_FETCHED_ASG_INSTANCES = "Number of fetched schedulable ec2 instances that belong to an autoscaling group: {}"
+INF_STANDBY_MODE = "{} standby mode for the instances: {} in autoscaling group: {}"
 
 WARN_STARTED_INSTANCES_TAGGING = "Error deleting or creating tags for started instances {} ({})"
 WARN_STOPPED_INSTANCES_TAGGING = "Error deleting or creating tags for stopped instances {} ({})"
 WARNING_INSTANCE_NOT_STARTING = "Ec2 instance {} is not started"
 WARNING_INSTANCE_NOT_STOPPING = "Ec2 instance {} is not stopped"
+WARN_STANDBY_GROUP = "Action {} standby failed for the instance group {} in autoscaling group {}. Will retry individually."
+WARN_STANDBY_FAILED_ENTER = "Instances {} failed to enter standby mode, they will not be stopped."
+WARN_STANDBY_FAILED_EXIT = "Instances {} were started but failed to exit standby mode."
 
 DEBUG_SKIPPED_INSTANCE = "Skipping ec2 instance {} because it it not in a schedulable state ({})"
 DEBUG_SELECTED_INSTANCE = "Selected ec2 instance {} in state ({})"
-
 
 class Ec2Service:
     """
@@ -56,6 +66,8 @@ class Ec2Service:
     def __init__(self):
         self.service_name = "ec2"
         self.allow_resize = True
+        self.supports_standby = True
+
 
     def _init_scheduler(self, args):
         self._session = args.get(schedulers.PARAM_SESSION)
@@ -68,13 +80,24 @@ class Ec2Service:
     @classmethod
     def instance_batches(cls, instances, size):
         instance_buffer = []
-        for instance in instances:
-            instance_buffer.append(instance)
-            if len(instance_buffer) == size:
-                yield instance_buffer
-                instance_buffer = []
-        if len(instance_buffer) > 0:
-            yield instance_buffer
+        retries = []
+        while True:
+            for instance in instances:
+                instance_buffer.append(instance)
+                if len(instance_buffer) == size:
+                    retry = yield instance_buffer
+                    if retry:
+                        retries.extend(retry)
+                        yield
+                    instance_buffer = []
+            if len(instance_buffer) > 0:
+                retry = yield instance_buffer
+                if retry:
+                    retries.extend(retry)
+                    yield
+            for retry_instance in retries:
+                yield [retry_instance]
+            break
 
     # get instances and handle paging
     def get_schedulable_instances(self, **kwargs):
@@ -86,6 +109,7 @@ class Ec2Service:
         tagname = kwargs[schedulers.PARAM_TAG_NAME]
 
         client = get_client_with_retries("ec2", ["describe_instances"], context=context, session=session, region=region)
+        asg_client = get_client_with_retries("autoscaling", ["describe_auto_scaling_instances"], context=context, session=session, region=region)
 
         def is_in_schedulable_state(ec2_inst):
             state = ec2_inst["state"] & 0xFF
@@ -96,8 +120,10 @@ class Ec2Service:
                "|[?Tags]|[?contains(Tags[*].Key, '{}')]".format(tagname)
 
         args = {}
+        asg_args = {}
         number_of_instances = 0
         instances = []
+        asg_matched_instances = 0
         done = False
 
         logger.info(INF_FETCHING_INSTANCES, account, region)
@@ -118,6 +144,31 @@ class Ec2Service:
             else:
                 done = True
         logger.info(INF_FETCHED_INSTANCES, number_of_instances, len(instances))
+
+        logger.info(INF_FETCHING_ASG_INSTANCES, account, region)
+        done = False
+        while not done:
+            asg_resp = asg_client.describe_auto_scaling_instances_with_retries(**asg_args)
+            for asg_inst in asg_resp["AutoScalingInstances"]:
+                # determine if its one we can schedule, then add the asg_name & lifecycle to it
+                instance = {}
+                try:
+                    instance = (ec2_inst for ec2_inst in instances if ec2_inst["id"] == asg_inst["InstanceId"]).__next__()
+                except StopIteration:
+                    pass
+                if instance:
+                    asg_matched_instances += 1
+                    instance['allow_resize'] = False
+                    instance['asg_name'] = asg_inst["AutoScalingGroupName"]
+                    instance['asg_lifecycle_state'] = asg_inst["LifecycleState"]
+                else:
+                    instance['asg_name'] = None
+                    instance['asg_lifecycle_state'] = None
+            if "NextToken" in asg_resp:
+                asg_args["NextToken"] = asg_resp["NextToken"]
+            else:
+                done = True
+        logger.info(INF_FETCHED_ASG_INSTANCES, asg_matched_instances)
         return instances
 
     # selects and builds a named tuple for the instance data
@@ -144,7 +195,9 @@ class Ec2Service:
             schedulers.INST_CURRENT_STATE: InstanceSchedule.STATE_RUNNING if is_running else InstanceSchedule.STATE_STOPPED,
             schedulers.INST_INSTANCE_TYPE: instance["InstanceType"],
             schedulers.INST_TAGS: tags,
-            schedulers.INST_MAINTENANCE_WINDOW: None
+            schedulers.INST_MAINTENANCE_WINDOW: None,
+            schedulers.INST_ASG: None,
+            schedulers.INST_ASG_LIFECYCLE_STATE: None
         }
         return instance_data
 
@@ -165,6 +218,79 @@ class Ec2Service:
         except Exception as ex:
             self._logger.error("Error resizing instance {}, ({})", ",".join(instance.id), str(ex))
 
+    def group_asg_instances(self, instances):
+        # prepare instances that are a part of an asg, sort, and group for batch processing
+        asg_instances = [instance for instance in instances if instance.asg_name]
+        asg_instances.sort(key=lambda asg_instance: asg_instance.asg_name)
+        grouped_instances = itertools.groupby(asg_instances, lambda asg_instance: asg_instance.asg_name)
+        return grouped_instances
+
+    def exit_standby_instances(self, **kwargs):
+        self._init_scheduler(kwargs)
+        standby_instances = []
+        for asg_name, instances in self.group_asg_instances(kwargs[schedulers.PARAM_EXITED_STANDBY_INSTANCES]):
+            batches = self.instance_batches(instances, STANDBY_BATCH_SIZE)
+            for asg_instance_batch in batches:
+                asg_instance_ids = [i.id for i in list(asg_instance_batch)]
+
+                self._logger.info(INF_STANDBY_MODE, 'Exiting', asg_instance_ids, asg_name)
+                asg_client = get_client_with_retries("autoscaling", ["exit_standby"], context=self._context,
+                                                     session=self._session, region=self._region)
+                try:
+                    resp = asg_client.exit_standby_with_retries(InstanceIds=asg_instance_ids,
+                                                                AutoScalingGroupName=asg_name)
+                    for activity in resp['Activities']:
+                        standby_instances.append((re.search(r"^Moving EC2 instance out of Standby: (i-.*)$",
+                                                    activity['Description']).group(1), InstanceSchedule.STATE_RUNNING))
+                except Exception as ex:
+                    if len(asg_instance_ids) > 1:
+                        # group failed, send the generator the retries
+                        self._logger.warning(WARN_STANDBY_GROUP, 'exit', asg_instance_ids, asg_name)
+                        batches.send(asg_instance_batch)
+                    else:
+                        not_instandby_regex = re.search(r"The instance (i-.*) is not in Standby.",
+                                                  str(ex))
+                        if not_instandby_regex:
+                            standby_instances.append((not_instandby_regex.group(1), InstanceSchedule.STATE_RUNNING))
+                        else:
+                            self._logger.debug(ERR_EXITING_STANDBY_INSTANCES, asg_instance_ids, asg_name, repr(ex))
+        return standby_instances
+
+    def enter_standby_instances(self, instances):
+        standby_instances = []
+        failed_instances = []
+
+        for asg_name, instances in self.group_asg_instances(instances):
+            batches = self.instance_batches(instances, STANDBY_BATCH_SIZE)
+            for asg_instance_batch in batches:
+                asg_instance_ids = [i.id for i in list(asg_instance_batch)]
+
+                self._logger.info(INF_STANDBY_MODE, 'Entering', asg_instance_ids, asg_name)
+                asg_client = get_client_with_retries("autoscaling", ["enter_standby"], context=self._context,
+                                                     session=self._session, region=self._region)
+                try:
+                    resp = asg_client.enter_standby_with_retries(InstanceIds=asg_instance_ids,
+                                                                 AutoScalingGroupName=asg_name,
+                                                                 ShouldDecrementDesiredCapacity=True)
+                    for activity in resp['Activities']:
+                        standby_instances.extend([
+                            re.search(r"^Moving EC2 instance to Standby: (i-.*)$", activity['Description']).group(
+                                1)])
+                except Exception as ex:
+                    if len(asg_instance_ids) > 1:
+                        # group failed, send the generator the retries
+                        self._logger.warning(WARN_STANDBY_GROUP, 'enter', asg_instance_ids, asg_name)
+                        batches.send(asg_instance_batch)
+                    else:  # working on individual instance
+                        not_inservice = re.search(r"The instance (i-.*) is not in InService.",
+                                                  str(ex))
+                        if not_inservice:
+                            self._logger.warning('Instance {} is already not InService', not_inservice.group(1))
+                            standby_instances.extend(not_inservice.group(1).split(","))
+                        else:
+                            failed_instances.extend(asg_instance_ids)
+        return standby_instances, failed_instances
+
     # noinspection PyMethodMayBeStatic
     def stop_instances(self, **kwargs):
 
@@ -174,6 +300,13 @@ class Ec2Service:
         self._init_scheduler(kwargs)
 
         stopped_instances = kwargs[schedulers.PARAM_STOPPED_INSTANCES]
+
+        # handle asg instances, do not stop those that fail
+        standby_instances, failed_exit_standby = self.enter_standby_instances(stopped_instances)
+        if failed_exit_standby:
+            self._logger.warning(WARN_STANDBY_FAILED_ENTER, failed_exit_standby)
+            stopped_instances = [instance for instance in stopped_instances if instance.id not in failed_exit_standby]
+
         stop_tags = kwargs[schedulers.PARAM_CONFIG].stopped_tags
         start_tags_keys = [{"Key": t["Key"]} for t in kwargs[schedulers.PARAM_CONFIG].started_tags]
 
@@ -214,6 +347,7 @@ class Ec2Service:
         self._init_scheduler(kwargs)
 
         started_instances = kwargs[schedulers.PARAM_STARTED_INSTANCES]
+
         start_tags = kwargs[schedulers.PARAM_CONFIG].started_tags
         stop_tags_keys = [{"Key": t["Key"]} for t in kwargs[schedulers.PARAM_CONFIG].stopped_tags]
         client = get_client_with_retries("ec2", ["start_instances", "create_tags", "delete_tags"],
@@ -230,7 +364,16 @@ class Ec2Service:
                 for started_instance in start_resp["StartingInstances"]:
                     if is_in_starting_state(started_instance["CurrentState"]["Code"]):
                         instances_starting.append(started_instance["InstanceId"])
-                        yield started_instance["InstanceId"], InstanceSchedule.STATE_RUNNING
+                        asg_instance = {}
+                        try:  # match instance to object in instance_batch
+                            asg_instance = (ec2_inst for ec2_inst in instance_batch if
+                                        ec2_inst.id == started_instance["InstanceId"]).__next__()
+                        except StopIteration:
+                            pass
+                        if asg_instance != {} and asg_instance.asg_lifecycle_state == "Standby":
+                            yield started_instance["InstanceId"], InstanceSchedule.STATE_STANDBY
+                        else:
+                            yield started_instance["InstanceId"], InstanceSchedule.STATE_RUNNING
                     else:
                         self._logger.warning(WARNING_INSTANCE_NOT_STARTING, started_instance["InstanceId"])
             except Exception as ex:

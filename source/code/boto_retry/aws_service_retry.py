@@ -49,7 +49,10 @@ class AwsApiServiceRetry:
         :param ex: 
         :return: 
         """
-        return "throttling" in ex.message.lower()
+        if hasattr(ex, 'message'):
+            return "throttling" in ex.message.lower()
+        else:
+            return False
 
     @classmethod
     def service_not_available(cls, ex):

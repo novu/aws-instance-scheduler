@@ -281,8 +281,8 @@ class RdsService:
                 resp = client.describe_db_snapshots_with_retries(DBSnapshotIdentifier=name, SnapshotType="manual")
                 snapshot = resp.get("DBSnapshots", None)
                 return snapshot is not None
-            except Exception as e:
-                if type(e).__name__ == "DBSnapshotNotFoundFault":
+            except Exception as ex:
+                if type(ex).__name__ == "DBSnapshotNotFoundFault":
                     return False
                 else:
                     raise ex
